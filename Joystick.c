@@ -51,46 +51,6 @@ uint16_t ButtonMap[16] = {
 	0x8000,
 };
 
-/*** Debounce ****
-The following is some -really bad- debounce code. I have a more robust library
-that I've used in other personal projects that would be a much better use
-here, especially considering that this is a stick indented for use with arcade
-fighters.
-
-This code exists solely to actually test on. This will eventually be replaced.
-**** Debounce ***/
-// Quick debounce hackery!
-// We're going to capture each port separately and store the contents into a 32-bit value.
-uint32_t pb_debounce = 0;
-uint32_t pd_debounce = 0;
-
-// We also need a port state capture. We'll use a 16-bit value for this.
-uint16_t bd_state = 0;
-
-// We'll also give us some useful macros here.
-#define PINB_DEBOUNCED ((bd_state >> 0) & 0xFF)
-#define PIND_DEBOUNCED ((bd_state >> 8) & 0xFF) 
-
-// So let's do some debounce! Lazily, and really poorly.
-void debounce_ports(void) {
-	// We'll shift the current value of the debounce down one set of 8 bits. We'll also read in the state of the pins.
-	pb_debounce = (pb_debounce << 8) + PINB;
-	pd_debounce = (pd_debounce << 8) + PIND;
-
-	// We'll then iterate through a simple for loop.
-	for (int i = 0; i < 8; i++) {
-		if ((pb_debounce & (0x1010101 << i)) == (0x1010101 << i)) // wat
-			bd_state |= (1 << i);
-		else if ((pb_debounce & (0x1010101 << i)) == (0))
-			bd_state &= ~(uint16_t)(1 << i);
-
-		if ((pd_debounce & (0x1010101 << i)) == (0x1010101 << i))
-			bd_state |= (1 << (8 + i));
-		else if ((pd_debounce & (0x1010101 << i)) == (0))
-			bd_state &= ~(uint16_t)(1 << (8 + i));
-	}
-}
-
 // Main entry point.
 int main(void) {
 	// We'll start by performing hardware and peripheral setup.
@@ -104,9 +64,6 @@ int main(void) {
 		HID_Task();
 		// We also need to run the main USB management task.
 		USB_USBTask();
-		// As part of this loop, we'll also run our bad debounce code.
-		// Optimally, we should replace this with something that fires on a timer.
-		debounce_ports();
 	}
 }
 
@@ -120,12 +77,23 @@ void SetupHardware(void) {
 	clock_prescale_set(clock_div_1);
 	// We can then initialize our hardware and peripherals, including the USB stack.
 
-	// Both PORTD and PORTB will be used for handling the buttons and stick.
-	DDRD  &= ~0xFF;
-	PORTD |=  0xFF;
+	DDRB |= (1 << SH_LD);
+	#ifdef STATUS_LED
+	// Half-second flash on startup
+	DDRB |= (1 << STATUS_LED);
 
-	DDRB  &= ~0xFF;
-	PORTB |=  0xFF;
+	PORTB |= (1 << STATUS_LED);
+	_delay_ms(500);
+	PORTB &= ~(1 << STATUS_LED);
+	#endif
+
+	SPI_Init(
+		SPI_SPEED_FCPU_DIV_16 | // 1 MHz @ 16MHz F_CPU
+		SPI_ORDER_MSB_FIRST | 
+		SPI_SCK_LEAD_FALLING |
+		SPI_SAMPLE_TRAILING | 
+		SPI_MODE_MASTER
+	);
 	// The USB stack should be initialized last.
 	USB_Init();
 }
@@ -236,61 +204,83 @@ void HID_Task(void) {
 
 // Prepare the next report for the host.
 void GetNextReport(USB_JoystickReport_Input_t* const ReportData) {
-	// All of this code here is handled -really poorly-, and should be replaced with something a bit more production-worthy.
-	uint16_t buf_button   = 0x00;
-	uint8_t  buf_joystick = 0x00;
+	/*
+	Table from notes
+	+-----------+----+----+----+----+----+----+---+---+---+---+---+---+---+---+---+---+
+	| Bit Pos   | 15 | 14 | 13 | 12 | 11 | 10 | 9 | 8 | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+	| Keypad    |    |    |    |    | 3  | 6  | 9 | # | 2 | 5 | 8 | 0 | 1 | 4 | 7 | * |
+	| vJoystick |    |    |    |    | X  | →  | A | R | ↑ | ⌂ | ↓ | + | Y | ← | B | L |
+	+-----------+----+----+----+----+----+----+---+---+---+---+---+---+---+---+---+---+
+	*/
 
-	/* Clear the report contents */
+	// Clear the report contents
 	memset(ReportData, 0, sizeof(USB_JoystickReport_Input_t));
+	ReportData->LX = JOYSTICK_DEFAULT;
+	ReportData->LY = JOYSTICK_DEFAULT;
+	ReportData->HAT = HAT_DEFAULT;  // Don't have spare buttons for hat right now
+	
+	// Read the Keypad shift registers
+	uint16_t Keypad_State = Keypad_Read();
 
-	buf_button   = (~PIND_DEBOUNCED & 0xFF) << (~PINB_DEBOUNCED & 0x08 ? 8 : 0);
-	buf_joystick = (~PINB_DEBOUNCED & 0xFF);
-
-	for (int i = 0; i < 16; i++) {
-		if (buf_button & (1 << i))
-			ReportData->Button |= ButtonMap[i];
+	// Handle joystick
+	if ((Keypad_State & (1 << 2)) && !(Keypad_State & (1 << 10)))  // Left
+	{
+		ReportData->LX = JOYSTICK_MIN;
 	}
-
-	if (buf_joystick & 0x10)
-		ReportData->LX = 0;
-	else if (buf_joystick & 0x20)
-		ReportData->LX = 255;
-	else
-		ReportData->LX = 128;
-
-	if (buf_joystick & 0x80)
-		ReportData->LY = 0;
-	else if (buf_joystick & 0x40)
-		ReportData->LY = 255;
-	else
-		ReportData->LY = 128;
-
-	switch(buf_joystick & 0xF0) {
-		case 0x80: // Top
-			ReportData->HAT = 0x00;
-			break;
-		case 0xA0: // Top-Right
-			ReportData->HAT = 0x01;
-			break;
-		case 0x20: // Right
-			ReportData->HAT = 0x02;
-			break;
-		case 0x60: // Bottom-Right
-			ReportData->HAT = 0x03;
-			break;
-		case 0x40: // Bottom
-			ReportData->HAT = 0x04;
-			break;
-		case 0x50: // Bottom-Left
-			ReportData->HAT = 0x05;
-			break;
-		case 0x10: // Left
-			ReportData->HAT = 0x06;
-			break;
-		case 0x90: // Top-Left
-			ReportData->HAT = 0x07;
-			break;
-		default:
-			ReportData->HAT = 0x08;
+	if ((Keypad_State & (1 << 10)) && !(Keypad_State & (1 << 2)))  // Right
+	{
+		ReportData->LX = JOYSTICK_MAX;
 	}
+	if ((Keypad_State & (1 << 7)) && !(Keypad_State & (1 << 5)))  // Up
+	{
+		ReportData->LY = JOYSTICK_MIN;
+	}
+	if ((Keypad_State & (1 << 5)) && !(Keypad_State & (1 << 7)))  // Down
+	{
+		ReportData->LY = JOYSTICK_MAX;
+	}
+	
+	// Handle buttons
+	if (Keypad_State & (1 << 0))
+	{
+		ReportData->Button |= SWITCH_L;
+	}
+	if (Keypad_State & (1 << 1))
+	{
+		ReportData->Button |= SWITCH_B;
+	}
+	if (Keypad_State & (1 << 3))
+	{
+		ReportData->Button |= SWITCH_Y;
+	}
+	if (Keypad_State & (1 << 4))
+	{
+		ReportData->Button |= SWITCH_START;
+	}
+	if (Keypad_State & (1 << 6))
+	{
+		ReportData->Button |= SWITCH_HOME;
+	}
+	if (Keypad_State & (1 << 8))
+	{
+		ReportData->Button |= SWITCH_R;
+	}
+	if (Keypad_State & (1 << 9))
+	{
+		ReportData->Button |= SWITCH_A;
+	}
+	if (Keypad_State & (1 << 11))
+	{
+		ReportData->Button |= SWITCH_X;
+	}
+}
+
+uint16_t Keypad_Read(void)
+{
+	uint16_t state = 0;
+	PORTB |= (1 << SH_LD);
+	state |= SPI_ReceiveByte();
+	state |= (SPI_ReceiveByte() << 8);
+	PORTB &= ~(1 << SH_LD);
+	return state;
 }

@@ -49,8 +49,12 @@
 #include <LUFA/Drivers/Board/LEDs.h>
 #include <LUFA/Drivers/Board/Buttons.h>
 #include <LUFA/Platform/Platform.h>
+#include <LUFA/Drivers/Peripheral/SPI.h>
 
 #include "Descriptors.h"
+
+#define STATUS_LED PB4
+#define SH_LD PB5
 
 // Type Defines
 // Enumeration for joystick buttons.
@@ -70,6 +74,24 @@ typedef enum {
 	SWITCH_HOME    = 0x1000,
 	SWITCH_CAPTURE = 0x2000,
 } JoystickButtons_t;
+
+typedef enum {
+	HAT_TOP          = 0x00,
+	HAT_TOP_RIGHT    = 0x01,
+	HAT_RIGHT        = 0x02,
+	HAT_BOTTOM_RIGHT = 0x03,
+	HAT_BOTTOM       = 0x04,
+	HAT_BOTOTM_LEFT  = 0x05,
+	HAT_LEFT         = 0x06,
+	HAT_TOP_LEFT     = 0x07,
+	HAT_DEFAULT      = 0x08
+} Hat_Positions_t;
+
+typedef enum {
+	JOYSTICK_MAX = 255,
+	JOYSTICK_DEFAULT = 128,
+	JOYSTICK_MIN = 0
+} Joystick_Positions_t;
 
 // Joystick HID report structure. We have an input and an output.
 typedef struct {
@@ -105,6 +127,7 @@ void EVENT_USB_Device_ConfigurationChanged(void);
 void EVENT_USB_Device_ControlRequest(void);
 // Prepare the next report for the host.
 void GetNextReport(USB_JoystickReport_Input_t* const ReportData);
+// Handle the Keypad
+uint16_t Keypad_Read(void);
 
 #endif
-
