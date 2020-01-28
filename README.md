@@ -1,19 +1,58 @@
-## Switch-Fightstick
-Proof-of-Concept Fightstick for the Nintendo Switch. Uses the LUFA library and reverse-engineering of the Pokken Tournament Pro Pad for the Wii U to enable custom fightsticks on the Switch System v3.0.0.
+# Using a keypad to control the Switch
+This is what started the project, the idea was to take a spare keypad and some shift registers I had and use them to control the Switch.
 
-### Wait, what?
-On June 20, 2017, Nintendo released System Update v3.0.0 for the Nintendo Switch. Along with a number of additional features that were advertised or noted in the changelog, additional hidden features were added. One of those features allows for the use of compatible controllers, such as the Pokken Tournament Pro Pad, to be used on the Nintendo Switch.
+## Pictures and testing
 
-Unlike the Wii U, which handles these controllers on a 'per-game' basis, the Switch treats the Pokken controller as if it was a Switch Pro Controller. Along with having the icon for the Pro Controller, it functions just like it in terms of using it in other games, apart from the lack of physical controls such as analog sticks, the buttons for the stick clicks, or other system buttons such as Home or Capture.
+<details>
+<summary>Click to see pictures</summary>
 
-### But games like ARMS use the analog sticks!
-The Pokken Tournament Pro Pad was made by HORI, who also makes controllers for other consoles; because of this, the descriptors provided to Nintendo for the Pokken controller are **very** similar to that of some third-party PS3 controllers. In fact, the Pokken Tournament Pro Pad -can- be used on the PS3 without anything special needing to be done. The original descriptors feature 13 buttons, two analog sticks, a HAT switch, and some vendor-specific items that we can safely ignore. Compare this to a PS3 controller, which has...13 buttons (4 Face, 4 Shoulders, 2 Sticks, Select/Start, and PS), two analog sticks, and a HAT switch (the D-Pad). 
+Front ![Front](https://i.imgur.com/uP6rby3.jpg)
+Back ![Back](https://i.imgur.com/sDnNzD8.jpg)
+Buttons being tested ![Buttons](https://i.imgur.com/hmooWQ5.jpg)
+Beat a low level CPU in Smash ![Smash](https://i.imgur.com/EmFfic5.jpg)
 
-### What do you mean by 'original descriptors?'
-Turns out we can modify the descriptors to expose up to 16 buttons at **least**. The Switch Pro Controller has 14 buttons on it, and as it turns out, the modified set of descriptors does allow us to enable the use of the most important button:
+</details>
 
-### Is it the Captu-
+Testing in Smash, I found that while I can press the A button to confirm actions such as selecting characters and starting the game, I wasn't able to use my neutral attack, while standing still and while moving in a direction.  I haven't been able to fix this yet.  Special attacks work as expected.
 
-# THE CAPTURE BUTTON
+## The keypad
+The keypad is a 12-key numeric common terminal keypad.  Because it's a common terminal keypad, and not a matrix style keypad, it's a little better suited to multiple buttons being simultaniously pressed.  The buttons on the keypad have a resistance of around 300-5000 ohms, depending on how hard the button is being pressed.  I ran 5V thorugh the common pin so that the inputs on the shift register would be pulled high when a button is pressed.  You could also use a common ground pretty easily, especially with the complimentary serial output pin on the SN74HC165.  I've included a picture of my notes below for the pins and functions of each button.
 
-The Switch Pro Controller also exposes **additional** buttons within its descriptors; however, it's unknown as to what those do at this time. These come immediately after the HAT, so I'm under the assumption that they may be individual button presses instead of an angle. That being said, considering how flexible the Switch is with the Pokken controller descriptors, we may be able to mirror the Switch Pro Controller descriptors up to a certain point.
+![Keypad](https://i.imgur.com/GPlO2mx.jpg)
+
+## The shift registers
+Nothing too special about the shift registers, the one's I used are the [SN74HC165](http://www.ti.com/lit/ds/symlink/sn74hc165.pdf)s I got off eBay.  I tied them low with a 10k resistor on each input.  If you're OK with less inputs, you could remove the shift registers and resistors by using GPIO pins instead, you would just use a common ground and the internal pull-up resistors.  Because I was using an Arduino Pro Micro clone, I only had 10 GPIO pins, but would have needed 12.  I drove the shift registers using SPI.
+
+## The Microcontroller
+I used a $2 clone of the Arduino Pro Micro, which is based on the ATMEGA32U4.  Because I was using SPI, I needed to use pins 14 and 15 (MISO and SCK respectively) to drive the shift registers, and then any of remaining pins could have been used for the shift/load pin, but I used 9.  Pin 8 was used with a status LED for debugging.
+
+## The code
+Originally I started working with the actual SPI registers in the 32U4 datasheet, but determined that wasn't necessary.  I used the [LUFA SPI library](http://fourwalledcubicle.com/files/LUFA/Doc/151115/html/group___group___s_p_i___a_v_r8.html) instead, because the original repo uses LUFA for USB.  The SPI connection runs at 1MHz, I had some problems running at higher frequencies (F_CPU/2 and F_CPU/4) using both USART and SPI while debugging, and 1MHz is still a very good access time for 16 bits.  I removed the original debounce code from progmem's version, because I'm not using the PORTs on the MCU.  The other part of the code is just a series of if statements to write the keypad state to the joystick.
+
+![Translation](https://i.imgur.com/UrlW8pS.png)
+
+## Compiling and programming
+
+I used the Windows Subsystem for Linux (wsl) for a lot of this, of course native Linux would also work.  To use wsl, either prefix the commands with wsl (e.g. run "wsl make" to compile), or run wsl once to use the shell.  I used BitBurner to upload, which is a Windows avrdude GUI.  I added a pushbutton to short reset and ground on the microcontroller.
+
+The first thing you'll need is LUFA.  Download LUFA the ZIP from here http://www.fourwalledcubicle.com/LUFA.php, and extract the LUFA folder to the root of the project directory.  Alternatively you can specify another location by changing the LUFA_PATH variable in the makefile.  Next you'll need the libraries binutils-avr and avr-libc to compile, and avrdude is used for uploading the code, but if you use BitBurner you can skip it.
+
+Prep the environment:
+    
+    sudo apt update && sudo apt upgrade -y
+    sudo apt install make binutils-avr avr-libc avrdude -y
+
+Compiling is pretty easy:
+
+    make
+
+To upload, first reset the MCU by shorting the RST and GND pins, then either run this command or press write in BitBurner within 8 seconds of the reset.
+
+    avrdude -s -c avr109 -p m32u4 -P /dev/ttyS7 -U "flash:w:./Joystick.hex"
+
+/dev/ttyS7 coresponds to COM7 in Windows.  The Serial port used to communicate and the serial port used to upload are different, you can see what port is used to upload by resetting the MCU.
+
+#### Bitburner settings
+
+![BitBurner](https://i.imgur.com/S9IArF0.png)
+![BitBurner](https://i.imgur.com/tIdvWYH.png)
